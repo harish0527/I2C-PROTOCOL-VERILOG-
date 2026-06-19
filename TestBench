@@ -1,0 +1,64 @@
+module tb_i2c;
+
+  reg clk, rst, start, rw;
+  reg [7:0] master_data;
+  reg [6:0] slave_addr;
+  wire SCL;
+  wire SDA;
+  wire [7:0] master_data_out;
+  wire [7:0] slave_data_out;
+  wire ack;
+  wire busy;
+  wire ack_err;
+
+  // Instantiate Master
+  master master_inst (
+    .clk(clk),
+    .rst(rst),
+    .data_in(master_data),
+    .slave_add(slave_addr),
+    .rw(rw),
+    .start(start),
+    .SCL(SCL),
+    .busy(busy),
+    .SDA(SDA),
+    .ack_err(ack_err),
+    .data_out(master_data_out)
+  );
+
+  // Instantiate Slave
+  i2c_slave slave_inst (
+    .clk(clk),
+    .rst(rst),
+    .data_in(8'hA5),       // preload slave transmit data
+    .slave_add(7'b1010101),// slave address
+    .SCL(SCL),
+    .SDA(SDA),
+    .ack(ack),
+    .data_out(slave_data_out)
+  );
+
+pullup(SDA);
+  // Clock generation
+  always #5 clk = ~clk;
+
+  initial begin
+    clk = 0; rst = 1; start = 0; rw = 0;
+    master_data = 8'h3C;
+    slave_addr  = 7'b1010101;
+
+    #20 rst = 0;
+
+    // Write transaction
+    #10 start = 1; #10 start = 0;
+    #200;
+
+    // Read transaction
+    rw = 1;
+    #10 start = 1; #10 start = 0;
+    #200;
+
+    $stop;
+  end
+
+endmodule
