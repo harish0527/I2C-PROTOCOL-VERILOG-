@@ -1,0 +1,143 @@
+module i2c_master(
+    input  wire clk,          // system clock
+    input  wire rst,          // reset
+    input  wire [7:0] data_in,// data to write
+    input  wire [6:0] slave_add,
+    input  wire rw,           // 0=write, 1=read
+    input  wire start,        // trigger transaction
+    output reg  SCL,
+    output reg  busy,
+    inout  wire SDA,
+    output reg  ack_err,
+    output reg [7:0] data_out // data read from slave
+);
+
+localparam IDLE  = 3'd0;
+localparam START = 3'd1;
+localparam ADD   = 3'd2;
+localparam ACK   = 3'd3;
+localparam DATA  = 3'd4;
+localparam STOP  = 3'd5;
+
+reg [7:0] store;
+reg [2:0] bit_count;
+reg [2:0] state;
+reg sda_drive;
+
+// open-drain SDA
+assign SDA = sda_drive ? 1'b0 : 1'bz;
+
+// simple divider for SCL (adjust DIV_VALUE for frequency)
+reg [7:0] clk_div;
+parameter DIV_VALUE = 50; 
+always @(posedge clk or posedge rst) begin
+    if(rst) begin
+        clk_div <= 0;
+        SCL     <= 1;
+    end else begin
+        clk_div <= clk_div + 1;
+        if(clk_div == DIV_VALUE) begin
+            SCL     <= ~SCL;
+            clk_div <= 0;
+        end
+    end
+end
+
+// FSM
+always @(posedge clk or posedge rst) begin
+    if(rst) begin
+        data_out   <= 0;
+        busy       <= 0;
+        ack_err    <= 0;
+        store      <= 0;
+        bit_count  <= 0;
+        state      <= IDLE;
+        sda_drive  <= 0;
+    end else begin
+        case(state)
+            IDLE: begin
+                busy      <= 0;
+                sda_drive <= 0;
+                if(start) begin
+                    busy      <= 1;
+                    state     <= START;
+                    store     <= {slave_add, rw};
+                    bit_count <= 0;
+                    ack_err   <= 0;
+                end
+            end
+
+            START: begin
+                if(SCL) begin
+                    sda_drive <= 1; // SDA low while SCL high = START
+                    state     <= ADD;
+                end
+            end
+
+            ADD: begin
+                if(SCL) begin
+                    sda_drive <= ~store[7];
+                    if(bit_count == 7) begin
+                        state     <= ACK;
+                        bit_count <= 0;
+                    end else begin
+                        bit_count <= bit_count + 1;
+                        store     <= {store[6:0], 1'b0};
+                    end
+                end
+            end
+
+            ACK: begin
+                sda_drive <= 0; // release SDA for slave ACK
+                if(SCL) begin
+                    if(SDA == 1) begin
+                        ack_err <= 1; // NoAcknoledgement
+                        state   <= STOP;
+                    end else begin
+                        ack_err <= 0; // Acknoledgement
+                        state   <= DATA;
+                    end
+                end
+            end
+
+            DATA: begin
+                if(SCL) begin
+                    if(rw == 0) begin
+                        // write to slave
+                        if(bit_count == 0)
+                            store <= data_in;
+                        sda_drive <= ~store[7];
+                        if(bit_count == 7) begin
+                            state     <= STOP;
+                            bit_count <= 0;
+                        end else begin
+                            bit_count <= bit_count + 1;
+                            store     <= {store[6:0], 1'b0};
+                        end
+                    end else begin
+                        // read from slave
+                        data_out <= {data_out[6:0], SDA};
+                        if(bit_count == 7) begin
+                            state     <= STOP;
+                            bit_count <= 0;
+                        end else begin
+                            bit_count <= bit_count + 1;
+                        end
+                    end
+                end
+            end
+
+            STOP: begin
+                if(SCL) begin
+                    sda_drive <= 0; // SDA high while SCL high = STOP
+                    busy      <= 0;
+                    state     <= IDLE;
+                end
+            end
+
+            default: state <= IDLE;
+        endcase
+    end
+end
+
+endmodule
