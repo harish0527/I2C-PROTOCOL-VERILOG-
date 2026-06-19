@@ -1,0 +1,107 @@
+module i2c_slave(
+    input  wire clk,          // system clock
+    input  wire rst,          // reset
+    input  wire [7:0] data_in,// data to send when master reads
+    input  wire [6:0] slave_add,
+    input  wire SCL,          // clock from master
+    inout  wire SDA,
+    output reg  ack,
+    output reg [7:0] data_out // data received from master
+);
+
+localparam IDLE = 3'd0;
+localparam ADD  = 3'd1;
+localparam ACK  = 3'd2;
+localparam TRA  = 3'd3;
+localparam REC  = 3'd4;
+localparam STOP = 3'd5;
+
+reg [7:0] store;
+reg [2:0] bit_counter;
+reg [2:0] state;
+reg sda_drive;
+
+assign SDA = sda_drive ? 1'b0 : 1'bz; // open-drain style
+
+// FSM driven by system clk, but bit shifting aligned with SCL
+always @(posedge clk or posedge rst) begin
+    if(rst) begin
+        ack        <= 0;
+        sda_drive  <= 0;
+        data_out   <= 0;
+        store      <= 0;
+        bit_counter<= 0;
+        state      <= IDLE;
+    end else begin
+        case(state)
+            IDLE: begin
+                ack        <= 0;
+                sda_drive  <= 0;
+                data_out   <= 0;
+                store      <= 0;
+                bit_counter<= 0;
+                if(SCL && !SDA) // START condition: SDA low while SCL high
+                    state <= ADD;
+            end
+
+            ADD: begin
+                if(SCL) begin
+                    store <= {store[6:0], SDA};
+                    if(bit_counter == 7) begin
+                        if(store[7:1] == slave_add)
+                            state <= ACK;
+                        else
+                            state <= STOP;
+                        bit_counter <= 0;
+                    end else
+                        bit_counter <= bit_counter + 1;
+                end
+            end
+
+            ACK: begin
+                sda_drive <= 1; // drive SDA low for ACK
+                ack       <= 1;
+                if(store[0] == 0)
+                    state <= REC; // master write
+                else
+                    state <= TRA; // master read
+                sda_drive <= 0; // release SDA after ACK pulse
+            end
+
+            REC: begin
+                if(SCL) begin
+                    data_out <= {data_out[6:0], SDA};
+                    if(bit_counter == 7) begin
+                        state       <= ACK;
+                        bit_counter <= 0;
+                    end else
+                        bit_counter <= bit_counter + 1;
+                end
+            end
+
+            TRA: begin
+                if(SCL) begin
+                    sda_drive <= ~store[7];
+                    if(bit_counter == 7) begin
+                        state       <= ACK;
+                        bit_counter <= 0;
+                        sda_drive   <= 0; // release SDA for master ACK/NACK
+                    end else begin
+                        bit_counter <= bit_counter + 1;
+                        store       <= {store[6:0], 1'b0};
+                    end
+                end
+            end
+
+            STOP: begin
+                sda_drive  <= 0;
+                ack        <= 0;
+                store      <= 0;
+                bit_counter<= 0;
+                if(SCL) state <= IDLE; // STOP condition: SDA high while SCL high
+            end
+        endcase
+    end
+end
+
+endmodule
